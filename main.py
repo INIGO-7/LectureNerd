@@ -6,10 +6,6 @@ import numpy as np
 import scipy.io.wavfile as wav
 import os
 
-# Set your OpenAI API key
-# openai.api_key = st.secrets["OPENAI_API_KEY"]  # Si usas secrets de Streamlit
-openai.api_key = "YOUR_API_KEY"  # Reemplaza con tu clave API
-
 # Audio recording parameters
 fs = 44100
 channels = 1
@@ -18,6 +14,9 @@ channels = 1
 recording = False
 audio_data = []
 
+# Variable de sesión para la clave API
+if "api_key" not in st.session_state:
+    st.session_state.api_key = None
 
 def transcribe_audio(audio_data=None, audio_file=None):
     """Transcribes audio using OpenAI Whisper."""
@@ -41,6 +40,7 @@ def transcribe_audio(audio_data=None, audio_file=None):
 def summarize_text(text):
     """Summarizes text using OpenAI GPT-4."""
     try:
+        openai.api_key = st.session_state.api_key  # Usar la clave de la sesión
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
@@ -53,6 +53,21 @@ def summarize_text(text):
     except Exception as e:
         return f"Error summarizing text: {e}"
 
+def manage_api_key():
+    """Muestra un popup para gestionar la clave API."""
+    if "show_api_key_form" not in st.session_state:
+        st.session_state.show_api_key_form = False
+
+    if st.session_state.show_api_key_form:
+        with st.form("api_key_form"):
+            api_key_input = st.text_input("Introduce tu clave API de OpenAI:", value=st.session_state.api_key, type="password")
+            if st.form_submit_button("Guardar"):
+                st.session_state.api_key = api_key_input
+                st.success("Clave API guardada correctamente.")
+                st.session_state.show_api_key_form = False
+
+# Botón para gestionar la clave API (fuera del condicional)
+st.button("Gestionar claves", on_click=manage_api_key, key="manage_api_key_button")
 
 # Interfaz de Streamlit
 st.title("Class Summarizer")
