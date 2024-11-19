@@ -6,6 +6,7 @@ import sounddevice as sd
 import numpy as np
 import scipy.io.wavfile as wav
 import os
+import json
 
 # Set your OpenAI API key
 openai.api_key = "YOUR_API_KEY"
@@ -17,39 +18,50 @@ channels = 1  # Mono recording
 # Global variables for audio recording
 recording = False
 audio_data = []
+last_save_path = None  # Variable to store the last used save path
+
+# Load last saved path from config file
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+        last_save_path = config.get('last_save_path')
+except FileNotFoundError:
+    pass
+
 
 def transcribe_audio(audio_data=None, audio_file=None):
-  """Transcribes audio using OpenAI Whisper."""
-  try:
-    if audio_data is not None:
-      # Save the recorded audio data to a temporary file
-      temp_file = "temp_audio.wav"
-      wav.write(temp_file, fs, np.array(audio_data, dtype=np.int16))
-      with open(temp_file, "rb") as f:
-        transcript = openai.Audio.transcribe("whisper-1", f)
-      os.remove(temp_file)  # Remove the temporary file
-    elif audio_file is not None:
-      with open(audio_file, "rb") as f:
-        transcript = openai.Audio.transcribe("whisper-1", f)
-    else:
-      return "No audio data or file provided."
-    return transcript.text
-  except Exception as e:
-    return f"Error transcribing audio: {e}"
+    """Transcribes audio using OpenAI Whisper."""
+    try:
+        if audio_data is not None:
+            # Save the recorded audio data to a temporary file
+            temp_file = "temp_audio.wav"
+            wav.write(temp_file, fs, np.array(audio_data, dtype=np.int16))
+            with open(temp_file, "rb") as f:
+                transcript = openai.Audio.transcribe("whisper-1", f)
+            os.remove(temp_file)  # Remove the temporary file
+        elif audio_file is not None:
+            with open(audio_file, "rb") as f:
+                transcript = openai.Audio.transcribe("whisper-1", f)
+        else:
+            return "No audio data or file provided."
+        return transcript.text
+    except Exception as e:
+        return f"Error transcribing audio: {e}"
+
 
 def summarize_text(text):
-  """Summarizes text using OpenAI GPT."""
-  try:
-    response = openai.ChatCompletion.create(
-      model="gpt-3.5-turbo",
-      messages=[
-        {"role": "system", "content": "You are a helpful assistant that summarizes text."},
-        {"role": "user", "content": f"Please summarize the following text:\n{text}"}
-      ]
-    )
-    return response.choices[0].message.content.strip()
-  except Exception as e:
-    return f"Error summarizing text: {e}"
+    """Summarizes text using OpenAI GPT-4."""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",  # Using GPT-4
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that summarizes text."},
+                {"role": "user", "content": f"Please summarize the following text:\n{text}"}
+            ]
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Error summarizing text: {e}"
 
 def process_input():
   """Processes text or audio input and displays the summary."""
@@ -129,43 +141,50 @@ def pause_recording():
   record_button.config(text="Record", command=start_recording)
 
 def stop_recording():
-  """Stops audio recording and provides options."""
-  global recording, audio_data
-  recording = False
-  record_button.config(text="Record", command=start_recording)
-  stop_button.grid_forget()
+    """Stops audio recording and provides options."""
+    global recording, audio_data
+    recording = False
+    record_button.config(text="Record", command=start_recording)
+    stop_button.grid_forget()
 
-  def save_audio(file_path):
-    wav.write(file_path, fs, np.array(audio_data, dtype=np.int16))
-    result_label.config(text=f"Audio saved to {file_path}")
+    def save_audio(file_path):
+        wav.write(file_path, fs, np.array(audio_data, dtype=np.int16))
+        result_label.config(text=f"Audio saved to {file_path}")
+        # Save the path for future use
+        global last_save_path
+        last_save_path = file_path
+        try:
+            with open('config.json', 'w') as f:
+                json.dump({'last_save_path': last_save_path}, f)
+        except Exception as e:
+            print(f"Error saving config file: {e}")
 
-  def transcribe_and_summarize():
-    transcript = transcribe_audio(audio_data=audio_data)
-    summary = summarize_text(transcript)
-    result_label.config(text=summary)
+    def transcribe_and_summarize():
+        transcript = transcribe_audio(audio_data=audio_data)
+        summary = summarize_text(transcript)
+        result_label.config(text=summary)
 
-  # Ask the user what to do with the recording
-  result = messagebox.askquestion(
-    "Recording stopped",
-    "What do you want to do with the recording?",
-    type="yesnocancel"
-  )
-  if result == "yes":  # Save
-    save_file_path = filedialog.asksaveasfilename(
-      defaultextension=".wav",
-      filetypes=(("WAV files", "*.wav"), ("all files", "*.*"))
+    # Ask the user what to do with the recording
+    result = messagebox.askquestion(
+        "Recording stopped",
+        "What do you want to do with the recording?",
+        type="yesnocancel"
     )
-    if save_file_path:
-      save_audio(save_file_path)
-      # Add option to save the path for future recordings here (not implemented)
-  elif result == "no":  # Delete
-    audio_data = []
-    result_label.config(text="Recording deleted.")
-  elif result == "cancel":  # Continue recording
-    start_recording()
-  else:
-    pass  # Do nothing
-
+    if result == "yes":  # Save
+        save_file_path = filedialog.asksaveasfilename(
+            initialdir=last_save_path,  # Start in the last used directory
+            defaultextension=".wav",
+            filetypes=(("WAV files", "*.wav"), ("all files", "*.*"))
+        )
+        if save_file_path:
+            save_audio(save_file_path)
+    elif result == "no":  # Delete
+        audio_data = []
+        result_label.config(text="Recording deleted.")
+    elif result == "cancel":  # Continue recording
+        start_recording()
+    else:
+        pass  # Do nothing
 def switch_input_type():
   """Switches between text and audio input UI."""
   input_type = input_var.get()
