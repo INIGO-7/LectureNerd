@@ -1,127 +1,177 @@
 import streamlit as st
-import openai
-import threading
 import sounddevice as sd
 import numpy as np
+import matplotlib.pyplot as plt
+import openai
+import threading
 import scipy.io.wavfile as wav
+from pathlib import Path
 import os
 
-# Audio recording parameters
-fs = 44100
-channels = 1
+# Constants for recording
+fs = 44100  # Sampling frequency
+channels = 1  # Mono audio
 
-# Global variables
-recording = False
-audio_data = []
+# Thread-safe recording control
+recording_event = threading.Event()
+audio_data_buffer = []  # Thread-safe buffer for audio chunks
+recording_time = 0.0  # Time elapsed during recording
 
-# Variable de sesión para la clave API
+# Initialize Streamlit session state
+if "recorded_audio" not in st.session_state:
+    st.session_state.recorded_audio = None
 if "api_key" not in st.session_state:
     st.session_state.api_key = None
 
-def transcribe_audio(audio_data=None, audio_file=None):
-    """Transcribes audio using OpenAI Whisper."""
+
+# Function to record audio
+def record_audio():
+    global audio_data_buffer, recording_time
+    audio_data_buffer.clear()  # Clear buffer before starting
+    recording_time = 0.0
+
+    while recording_event.is_set():
+        audio_chunk = sd.rec(int(fs * 0.5), samplerate=fs, channels=channels)
+        sd.wait()
+        audio_data_buffer.extend(audio_chunk[:, 0])  # Append new data
+        recording_time += 0.5
+
+
+# Function to save audio to file
+def save_audio_to_file(audio_data, file_name="output.wav"):
+    wav.write(file_name, fs, np.array(audio_data, dtype=np.float32))
+    return file_name
+
+
+# Function to plot audio wave
+def plot_audio_wave(audio_data):
+    plt.figure(figsize=(8, 2))
+    plt.plot(audio_data, color="blue")
+    plt.xlabel("Samples")
+    plt.ylabel("Amplitude")
+    plt.title("Audio Waveform")
+    plt.tight_layout()
+    st.pyplot(plt)
+
+
+# Transcription function using OpenAI Whisper
+def transcribe_audio(audio_file):
     try:
-        if audio_data is not None:
-            temp_file = "temp_audio.wav"
-            wav.write(temp_file, fs, np.array(audio_data, dtype=np.int16))
-            with open(temp_file, "rb") as f:
-                transcript = openai.Audio.transcribe("whisper-1", f)
-            os.remove(temp_file)
-        elif audio_file is not None:
-            with open(audio_file, "rb") as f:
-                transcript = openai.Audio.transcribe("whisper-1", f)
-        else:
-            return "No audio data or file provided."
+        openai.api_key = st.session_state.api_key
+        with open(audio_file, "rb") as f:
+            transcript = openai.Audio.transcribe("whisper-1", f)
         return transcript.text
     except Exception as e:
-        return f"Error transcribing audio: {e}"
+        return f"Error during transcription: {e}"
 
 
+# Text summarization function using OpenAI GPT-4
 def summarize_text(text):
-    """Summarizes text using OpenAI GPT-4."""
     try:
-        openai.api_key = st.session_state.api_key  # Usar la clave de la sesión
+        openai.api_key = st.session_state.api_key
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system",
-                 "content": "You are a helpful assistant that summarizes text."},
-                {"role": "user", "content": f"Please summarize the following text:\n{text}"}
+                {"role": "system", "content": "You are an assistant that summarizes text."},
+                {"role": "user", "content": f"Summarize the following text:\n{text}"}
             ]
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"Error summarizing text: {e}"
+        return f"Error during summarization: {e}"
 
-def manage_api_key():
-    """Muestra un popup para gestionar la clave API."""
-    if "show_api_key_form" not in st.session_state:
-        st.session_state.show_api_key_form = False
 
-    if st.session_state.show_api_key_form:
-        with st.form("api_key_form"):
-            api_key_input = st.text_input("Introduce tu clave API de OpenAI:", value=st.session_state.api_key, type="password")
-            if st.form_submit_button("Guardar"):
-                st.session_state.api_key = api_key_input
-                st.success("Clave API guardada correctamente.")
-                st.session_state.show_api_key_form = False
+# Main interface
+st.title("LectureNerd")
+st.sidebar.title("Options")
+module = st.sidebar.selectbox("Select a module:", ["Recording (Audio)", "Text"])
 
-# Botón para gestionar la clave API (fuera del condicional)
-st.button("Gestionar claves", on_click=manage_api_key, key="manage_api_key_button")
+# Recording Module
+if module == "Recording (Audio)":
+    st.header("Recording Module")
 
-# Interfaz de Streamlit
-st.title("Class Summarizer")
+    # Control buttons
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🎤 Start Recording") and not recording_event.is_set():
+            recording_event.set()
+            threading.Thread(target=record_audio).start()
+            st.success("Recording started...")
+    with col2:
+        if st.button("⏸️ Pause Recording") and recording_event.is_set():
+            recording_event.clear()
+            st.info("Recording paused.")
+    with col3:
+        if st.button("⏹️ Stop Recording"):
+            recording_event.clear()
+            if audio_data_buffer:
+                file_name = save_audio_to_file(audio_data_buffer)
+                st.session_state.recorded_audio = file_name
+                st.success("Recording stopped.")
+            else:
+                st.warning("No audio recorded.")
 
-input_type = st.radio("Tipo de entrada:", ("Texto", "Audio"))
+    # Display recording time and waveform
+    if audio_data_buffer:
+        st.write(f"⏱️ Recording Time: {recording_time:.1f} seconds")
+        plot_audio_wave(audio_data_buffer)
 
-if input_type == "Texto":
-    # Caja de texto para pegar texto
-    pasted_text = st.text_area("Pega aquí tu texto:")
+    # Post-recording actions
+    if st.session_state.recorded_audio:
+        st.audio(st.session_state.recorded_audio, format="audio/wav")
+        st.write("Recorded audio available. Choose an action:")
+        col1, col2, col3, col4 = st.columns(4)
 
-    # Subir archivo de texto
-    uploaded_file = st.file_uploader("O bien, selecciona un archivo de texto",
-                                     type=["txt", "pdf", "docx"])
+        with col1:
+            if st.button("💾 Save to System"):
+                saved_path = Path("saved_audio.wav")
+                os.rename(st.session_state.recorded_audio, saved_path)
+                st.success(f"Audio saved at: {saved_path}")
 
-    if uploaded_file is not None:
-        try:
-            text = uploaded_file.read().decode()
-        except Exception as e:
-            st.error(f"Error al leer el archivo: {e}")
-    else:
-        text = pasted_text  # Usar el texto pegado si no se subió ningún archivo
+        with col2:
+            if st.button("🗑️ Discard"):
+                audio_data_buffer.clear()
+                st.session_state.recorded_audio = None
+                recording_time = 0.0
+                st.warning("Audio discarded.")
 
-    if st.button("Resumir"):
+        with col3:
+            if st.button("📝 Transcribe"):
+                transcript = transcribe_audio(st.session_state.recorded_audio)
+                st.text_area("Transcription:", value=transcript, height=200)
+
+        with col4:
+            if st.button("📋 Summarize"):
+                transcript = transcribe_audio(st.session_state.recorded_audio)
+                summary = summarize_text(transcript)
+                st.text_area("Summary:", value=summary, height=200)
+
+# Text Module
+elif module == "Text":
+    st.header("Text Module")
+    input_type = st.radio("Input type:", ["Text", "Text File"])
+
+    text = ""
+    if input_type == "Text":
+        text = st.text_area("Enter your text here:")
+
+    elif input_type == "Text File":
+        uploaded_file = st.file_uploader("Select a text file", type=["txt"])
+        if uploaded_file is not None:
+            try:
+                text = uploaded_file.read().decode()
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+    if st.button("📋 Summarize Text"):
         if text:
             summary = summarize_text(text)
-            st.text_area("Resumen:", value=summary, height=200)
+            st.text_area("Summary:", value=summary, height=200)
+            if st.button("📎 Copy to Clipboard"):
+                st.code(summary, language="text")
+            if st.button("💾 Save Summary"):
+                with open("summary.txt", "w") as f:
+                    f.write(summary)
+                st.success("Summary saved to 'summary.txt'")
         else:
-            st.warning("Por favor, introduce texto o sube un archivo.")
-
-elif input_type == "Audio":
-    if st.button("Grabar"):
-        recording = True
-        audio_data = []
-        st.write("Grabando...")
-
-        def record_audio():
-            global audio_data
-            while recording:
-                audio_chunk = sd.rec(int(fs * 0.5),
-                                     samplerate=fs,
-                                     channels=channels)
-                sd.wait()
-                audio_data.extend(audio_chunk[:, 0])
-
-        threading.Thread(target=record_audio).start()
-
-    if st.button("Detener"):
-        recording = False
-        st.write("Grabación detenida.")
-
-    if st.button("Resumir"):
-        if audio_data:
-            transcript = transcribe_audio(audio_data=audio_data)
-            summary = summarize_text(transcript)
-            st.text_area("Resumen:", value=summary, height=200)
-        else:
-            st.warning("Primero debes grabar audio.")
+            st.warning("Please enter text or upload a file.")
